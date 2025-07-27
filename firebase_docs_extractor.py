@@ -377,13 +377,19 @@ class FirebaseDocsExtractor:
 
     def clear_lines(self, num_lines):
         """Clear the last num_lines from terminal."""
-        if sys.platform == "win32":
-            # Windows
-            for _ in range(num_lines):
-                print('\033[F\033[K', end='')  # Move up and clear line
-        else:
-            # Unix/Linux/Mac
-            print(f'\033[{num_lines}F\033[J', end='')
+        if num_lines <= 0:
+            return
+        try:
+            if sys.platform == "win32":
+                # Windows - Move cursor up and clear each line
+                for _ in range(num_lines):
+                    print('\033[1A\033[2K', end='', flush=True)  # Move up one line and clear it
+            else:
+                # Unix/Linux/Mac - Move up and clear from cursor to end
+                print(f'\033[{num_lines}A\033[0J', end='', flush=True)
+        except:
+            # Fallback: just print newlines to push content up
+            pass
 
     def get_colored_text(self, text, color_code):
         """Apply color to text with ANSI escape codes."""
@@ -453,19 +459,33 @@ class FirebaseDocsExtractor:
         
         current_index = 0
         selected = set()  # Track selected languages
+        last_menu_lines = 0  # Track how many lines the last menu took
         
         def display_menu():
             """Display the current menu state with colors."""
+            nonlocal last_menu_lines
+            menu_lines = 0
+            
+            # Display language options
             for i, lang in enumerate(available_languages):
                 is_current = i == current_index
                 is_selected = lang in selected
                 formatted_item = self.format_language_item(lang, is_current, is_selected)
                 print(formatted_item)
+                menu_lines += 1
             
-            print(f"\n💡 Controls:")
+            # Empty line before controls
+            print()
+            menu_lines += 1
+            
+            # Display controls
+            print(f"💡 Controls:")
+            menu_lines += 1
             controls_text = "   ↑/↓  Navigate    SPACE  Select/Deselect    ENTER  Confirm"
             print(self.get_colored_text(controls_text, "96"))  # Bright cyan
+            menu_lines += 1
             
+            # Display status
             if selected:
                 selected_langs = ', '.join(sorted(selected))
                 selected_text = f"   Selected: {selected_langs}"
@@ -473,6 +493,10 @@ class FirebaseDocsExtractor:
             else:
                 help_text = "   No languages selected (will include all if you press ENTER)"
                 print(self.get_colored_text(help_text, "93"))  # Bright yellow
+            menu_lines += 1
+            
+            last_menu_lines = menu_lines
+            return menu_lines
         
         # Initial display
         display_menu()
@@ -483,11 +507,11 @@ class FirebaseDocsExtractor:
                 
                 if key == 'fallback':
                     # Clear display and use fallback
-                    self.clear_lines(len(available_languages) + 6)
+                    self.clear_lines(last_menu_lines)
                     return self.fallback_language_selection(available_languages)
                 
-                # Clear previous menu
-                self.clear_lines(len(available_languages) + 6)
+                # Clear previous menu (only the exact number of lines we used)
+                self.clear_lines(last_menu_lines)
                 
                 if key == 'up':
                     current_index = (current_index - 1) % len(available_languages)
@@ -527,7 +551,7 @@ class FirebaseDocsExtractor:
                 return []
             except Exception as e:
                 # Clear display and use fallback
-                self.clear_lines(len(available_languages) + 6)
+                self.clear_lines(last_menu_lines)
                 warning_msg = f"⚠️  Interactive mode failed ({e}), using fallback..."
                 print(self.get_colored_text(warning_msg, "93;1"))  # Bright yellow bold
                 return self.fallback_language_selection(available_languages)
