@@ -25,6 +25,18 @@ import requests
 from bs4 import BeautifulSoup
 import html2text
 
+# For interactive menu
+try:
+    import msvcrt  # Windows
+    import os as term_os
+except ImportError:
+    try:
+        import termios  # Unix/Linux/Mac
+        import tty
+        import select
+    except ImportError:
+        pass
+
 
 class FirebaseDocsExtractor:
     def __init__(self, selected_languages=None):
@@ -313,13 +325,216 @@ class FirebaseDocsExtractor:
         
         return filtered_content
     
+    def get_key_press(self):
+        """Get a single key press from user (cross-platform)."""
+        try:
+            if sys.platform == "win32":
+                # Windows
+                while True:
+                    if msvcrt.kbhit():
+                        key = msvcrt.getch()
+                        if key == b'\xe0':  # Special key prefix on Windows
+                            key = msvcrt.getch()
+                            if key == b'H':  # Up arrow
+                                return 'up'
+                            elif key == b'P':  # Down arrow
+                                return 'down'
+                        elif key == b' ':  # Space
+                            return 'space'
+                        elif key == b'\r':  # Enter
+                            return 'enter'
+                        elif key == b'\x1b':  # Escape
+                            return 'escape'
+                        elif key in [b'q', b'Q']:
+                            return 'quit'
+            else:
+                # Unix/Linux/Mac
+                old_settings = termios.tcgetattr(sys.stdin)
+                try:
+                    tty.setraw(sys.stdin.fileno())
+                    key = sys.stdin.read(1)
+                    if key == '\x1b':  # Escape sequence
+                        key += sys.stdin.read(2)
+                        if key == '\x1b[A':  # Up arrow
+                            return 'up'
+                        elif key == '\x1b[B':  # Down arrow
+                            return 'down'
+                    elif key == ' ':  # Space
+                        return 'space'
+                    elif key == '\n' or key == '\r':  # Enter
+                        return 'enter'
+                    elif key == '\x1b':  # Escape
+                        return 'escape'
+                    elif key.lower() == 'q':
+                        return 'quit'
+                finally:
+                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+        except:
+            # Fallback to simple input if key detection fails
+            return 'fallback'
+        
+        return None
+
+    def clear_lines(self, num_lines):
+        """Clear the last num_lines from terminal."""
+        if sys.platform == "win32":
+            # Windows
+            for _ in range(num_lines):
+                print('\033[F\033[K', end='')  # Move up and clear line
+        else:
+            # Unix/Linux/Mac
+            print(f'\033[{num_lines}F\033[J', end='')
+
+    def get_colored_text(self, text, color_code):
+        """Apply color to text with ANSI escape codes."""
+        return f"\033[{color_code}m{text}\033[0m"
+
+    def format_language_item(self, lang, is_current, is_selected):
+        """Format a language item with appropriate colors and symbols."""
+        # Color codes
+        RESET = "0"
+        BRIGHT_GREEN = "92"
+        BRIGHT_BLUE = "94"
+        BRIGHT_CYAN = "96"
+        BRIGHT_YELLOW = "93"
+        BRIGHT_MAGENTA = "95"
+        WHITE_BG = "47"
+        GREEN_BG = "42"
+        BLUE_BG = "44"
+        
+        # Choose prefix and checkbox
+        prefix = "→ " if is_current else "  "
+        checkbox = "[✓] " if is_selected else "[ ] "
+        
+        # Apply colors based on state
+        if is_current and is_selected:
+            # Current item that is selected: bright green background with white text
+            colored_prefix = self.get_colored_text(prefix, f"{GREEN_BG};97")
+            colored_checkbox = self.get_colored_text(checkbox, f"{GREEN_BG};97")
+            colored_lang = self.get_colored_text(lang.capitalize(), f"{GREEN_BG};97;1")
+            return f"{colored_prefix}{colored_checkbox}{colored_lang}"
+        elif is_current:
+            # Current item not selected: blue background with white text
+            colored_prefix = self.get_colored_text(prefix, f"{BLUE_BG};97")
+            colored_checkbox = self.get_colored_text(checkbox, f"{BLUE_BG};97")
+            colored_lang = self.get_colored_text(lang.capitalize(), f"{BLUE_BG};97;1")
+            return f"{colored_prefix}{colored_checkbox}{colored_lang}"
+        elif is_selected:
+            # Selected item not current: bright green text
+            colored_prefix = prefix
+            colored_checkbox = self.get_colored_text(checkbox, BRIGHT_GREEN)
+            colored_lang = self.get_colored_text(lang.capitalize(), f"{BRIGHT_GREEN};1")
+            return f"{colored_prefix}{colored_checkbox}{colored_lang}"
+        else:
+            # Normal item: default colors
+            return f"{prefix}{checkbox}{lang.capitalize()}"
+
     def interactive_language_selection(self, available_languages):
-        """Allow user to interactively select languages."""
+        """Allow user to interactively select languages with arrow key navigation."""
         if not available_languages:
             print("No specific programming languages detected in this documentation.")
             return []
         
-        print(f"\n🔧 Available programming languages in this documentation:")
+        print(f"\n🔧 Select programming languages for this documentation:\n")
+        
+        # Check if we can use interactive mode
+        can_use_interactive = True
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+            else:
+                import termios, tty
+        except ImportError:
+            can_use_interactive = False
+        
+        if not can_use_interactive:
+            # Fallback to old method
+            return self.fallback_language_selection(available_languages)
+        
+        current_index = 0
+        selected = set()  # Track selected languages
+        
+        def display_menu():
+            """Display the current menu state with colors."""
+            for i, lang in enumerate(available_languages):
+                is_current = i == current_index
+                is_selected = lang in selected
+                formatted_item = self.format_language_item(lang, is_current, is_selected)
+                print(formatted_item)
+            
+            print(f"\n💡 Controls:")
+            controls_text = "   ↑/↓  Navigate    SPACE  Select/Deselect    ENTER  Confirm"
+            print(self.get_colored_text(controls_text, "96"))  # Bright cyan
+            
+            if selected:
+                selected_langs = ', '.join(sorted(selected))
+                selected_text = f"   Selected: {selected_langs}"
+                print(self.get_colored_text(selected_text, "92;1"))  # Bright green bold
+            else:
+                help_text = "   No languages selected (will include all if you press ENTER)"
+                print(self.get_colored_text(help_text, "93"))  # Bright yellow
+        
+        # Initial display
+        display_menu()
+        
+        while True:
+            try:
+                key = self.get_key_press()
+                
+                if key == 'fallback':
+                    # Clear display and use fallback
+                    self.clear_lines(len(available_languages) + 6)
+                    return self.fallback_language_selection(available_languages)
+                
+                # Clear previous menu
+                self.clear_lines(len(available_languages) + 6)
+                
+                if key == 'up':
+                    current_index = (current_index - 1) % len(available_languages)
+                elif key == 'down':
+                    current_index = (current_index + 1) % len(available_languages)
+                elif key == 'space':
+                    current_lang = available_languages[current_index]
+                    if current_lang in selected:
+                        selected.remove(current_lang)
+                    else:
+                        selected.add(current_lang)
+                elif key == 'enter':
+                    if selected:
+                        result = sorted(list(selected))
+                        success_msg = f"✅ Selected languages: {', '.join(lang.capitalize() for lang in result)}"
+                        print(self.get_colored_text(success_msg, "92;1"))  # Bright green bold
+                        print()  # Empty line
+                        return result
+                    else:
+                        success_msg = f"✅ No languages selected - including all languages"
+                        print(self.get_colored_text(success_msg, "93;1"))  # Bright yellow bold
+                        print()  # Empty line
+                        return available_languages
+                elif key in ['escape', 'quit']:
+                    cancel_msg = f"❌ Operation cancelled."
+                    print(self.get_colored_text(cancel_msg, "91;1"))  # Bright red bold
+                    print()  # Empty line
+                    return []
+                
+                # Redisplay menu
+                display_menu()
+                
+            except KeyboardInterrupt:
+                cancel_msg = f"❌ Operation cancelled."
+                print(self.get_colored_text(cancel_msg, "91;1"))  # Bright red bold
+                print()  # Empty line
+                return []
+            except Exception as e:
+                # Clear display and use fallback
+                self.clear_lines(len(available_languages) + 6)
+                warning_msg = f"⚠️  Interactive mode failed ({e}), using fallback..."
+                print(self.get_colored_text(warning_msg, "93;1"))  # Bright yellow bold
+                return self.fallback_language_selection(available_languages)
+    
+    def fallback_language_selection(self, available_languages):
+        """Fallback language selection method for when interactive mode fails."""
+        print(f"🔧 Available programming languages in this documentation:")
         for i, lang in enumerate(available_languages, 1):
             print(f"  {i}. {lang.capitalize()}")
         
@@ -363,8 +578,6 @@ class FirebaseDocsExtractor:
                 return []
             except Exception as e:
                 print(f"Error: {e}. Please try again.")
-        
-        return available_languages
     
     def convert_to_markdown(self, html_content, title):
         """Convert HTML content to Markdown."""
@@ -391,6 +604,16 @@ class FirebaseDocsExtractor:
         
         # Fix common formatting issues
         markdown_content = re.sub(r'\\(.)', r'\1', markdown_content)  # Remove excessive escaping
+        
+        # Fix code blocks: Replace [code] and [/code] with proper markdown code fences
+        markdown_content = re.sub(r'\[code\]\s*', '```\n', markdown_content, flags=re.IGNORECASE)
+        markdown_content = re.sub(r'\s*\[/code\]', '\n```', markdown_content, flags=re.IGNORECASE)
+        
+        # Fix inline code patterns that might have been converted incorrectly
+        markdown_content = re.sub(r'\[code\]([^\n]*?)\[/code\]', r'`\1`', markdown_content, flags=re.IGNORECASE)
+        
+        # Clean up any remaining malformed code block patterns
+        markdown_content = re.sub(r'```\s*\n\s*```', '```\n\n```', markdown_content)
         
         # Add title and metadata at the beginning
         metadata = f"""# {title}
@@ -478,6 +701,9 @@ class FirebaseDocsExtractor:
                 else:
                     print(f"Warning: Language '{lang}' not found in documentation. Available: {', '.join(available_languages)}")
             self.selected_languages = normalized_languages
+        elif available_languages and not self.selected_languages:
+            # Auto-prompt for language selection when no languages specified
+            self.selected_languages = self.interactive_language_selection(available_languages)
         
         # Filter content by selected languages
         if self.selected_languages:
@@ -521,13 +747,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Extract complete documentation
+  # Extract documentation with interactive language selection
   python firebase_docs_extractor.py "https://firebase.google.com/docs/ai-logic/get-started?api=vertex"
   
-  # Extract only Swift and Web examples
+  # Extract only Swift and Web examples (skip interactive selection)
   python firebase_docs_extractor.py "https://firebase.google.com/docs/ai-logic/get-started?api=vertex" --languages swift web
   
-  # Interactive language selection
+  # Force interactive language selection (same as default behavior)
   python firebase_docs_extractor.py "https://firebase.google.com/docs/ai-logic/get-started?api=vertex" --interactive
   
   # Save to specific directory with language filtering
@@ -551,7 +777,7 @@ Supported languages: swift, kotlin, java, web, dart, unity, python, go, php, rub
     parser.add_argument(
         '-l', '--languages',
         nargs='*',
-        help='Specific programming languages to include (e.g., swift web kotlin). If not specified, all languages are included.'
+        help='Specific programming languages to include (e.g., swift web kotlin). If not specified, you will be prompted to select languages interactively.'
     )
     
     parser.add_argument(
