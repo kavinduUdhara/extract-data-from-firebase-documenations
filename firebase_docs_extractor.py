@@ -269,8 +269,8 @@ class FirebaseDocsExtractor:
         # Create a copy to modify
         filtered_content = content.__copy__()
         
-        # Find language-specific sections
-        language_sections = []
+        # Find language-specific sections that should be removed
+        sections_to_remove = []
         
         # Look for headings that indicate language sections
         headings = filtered_content.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
@@ -278,41 +278,69 @@ class FirebaseDocsExtractor:
         for heading in headings:
             heading_text = heading.get_text().strip().lower()
             
-            # Check if this heading is for a specific language
-            matched_lang = None
+            # Skip very short headings (likely not language-specific)
+            if len(heading_text.strip()) < 3:
+                continue
+            
+            # Check if this heading is EXACTLY a language name we don't want
+            should_remove = False
+            contains_selected_lang = False
+            
+            # First, check if this heading contains any of our selected languages
             for selected_lang in self.selected_languages:
                 lang_variants = self.language_mappings.get(selected_lang, [selected_lang])
-                if any(variant in heading_text for variant in lang_variants):
-                    matched_lang = selected_lang
+                for variant in lang_variants:
+                    # Check for exact match or common patterns
+                    if (heading_text == variant or 
+                        heading_text.startswith(f"{variant} ") or 
+                        heading_text.endswith(f" {variant}") or
+                        f" {variant} " in heading_text):
+                        contains_selected_lang = True
+                        break
+                if contains_selected_lang:
                     break
             
-            if matched_lang:
-                # Keep this section
-                language_sections.append((heading, matched_lang, True))
-            else:
-                # Check if this is a language section we should remove
-                is_language_section = False
-                for lang, variants in self.language_mappings.items():
-                    if lang not in self.selected_languages:
-                        if any(variant in heading_text for variant in variants):
-                            is_language_section = True
+            # If this heading contains a selected language, keep it
+            if contains_selected_lang:
+                continue
+            
+            # Check if this heading is for a language we don't want
+            for lang, variants in self.language_mappings.items():
+                if lang not in self.selected_languages:
+                    for variant in variants:
+                        # Check for exact language name match (like "Swift", "Kotlin", etc.)
+                        # or very specific patterns that indicate a dedicated language section
+                        if (heading_text == variant or
+                            heading_text == f"{variant} setup" or
+                            heading_text == f"{variant} configuration" or 
+                            heading_text == f"{variant} implementation" or
+                            heading_text == f"{variant} installation" or
+                            heading_text == f"{variant} quickstart" or
+                            heading_text == f"{variant} getting started" or
+                            heading_text == f"{variant} code" or
+                            heading_text == f"{variant} example" or
+                            heading_text == f"{variant} sample" or
+                            heading_text == f"for {variant}" or
+                            heading_text.startswith(f"{variant} ") or
+                            (heading_text == variant and len(heading_text) < 20)):  # Short exact matches
+                            should_remove = True
                             break
-                
-                if is_language_section:
-                    language_sections.append((heading, None, False))
+                    if should_remove:
+                        break
+            
+            if should_remove:
+                sections_to_remove.append(heading)
         
         # Remove unwanted language sections
-        for heading, lang, keep in language_sections:
-            if not keep:
-                # Find the content between this heading and the next heading of same level
-                current_element = heading
+        for heading in sections_to_remove:
+            if heading.parent:  # Make sure the element still exists
                 elements_to_remove = [heading]
                 
                 # Get all elements until next heading of same or higher level
+                current_level = int(heading.name[1])
                 for sibling in heading.find_next_siblings():
                     if sibling.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
                         # Check if this is same or higher level heading
-                        current_level = int(heading.name[1])
                         sibling_level = int(sibling.name[1])
                         if sibling_level <= current_level:
                             break
@@ -323,7 +351,72 @@ class FirebaseDocsExtractor:
                     if element.parent:
                         element.decompose()
         
+        # Additional filtering: Look for platform-specific code blocks and tabs
+        # Many Firebase docs use tabs or code blocks with language-specific content
+        self.filter_language_specific_code_blocks(filtered_content)
+        
         return filtered_content
+    
+    def filter_language_specific_code_blocks(self, content):
+        """Remove language-specific code blocks and tabs that don't match selected languages."""
+        if not self.selected_languages or not content:
+            return
+        
+        # Look for elements with language-specific classes or attributes
+        language_specific_selectors = [
+            '[class*="language-"]',  # Code blocks with language classes
+            '[data-language]',       # Elements with language data attributes
+            '[class*="-lang-"]',     # Firebase docs often use classes like "web-lang-js"
+            '[class*="platform-"]',  # Platform-specific content
+            '.devsite-code-buttons-container',  # Code block containers
+        ]
+        
+        for selector in language_specific_selectors:
+            elements = content.select(selector)
+            for element in elements:
+                should_remove = False
+                
+                # Check class names
+                classes = element.get('class', [])
+                if isinstance(classes, list):
+                    class_text = ' '.join(classes).lower()
+                    
+                    # Check if any unselected language is mentioned in classes
+                    for lang, variants in self.language_mappings.items():
+                        if lang not in self.selected_languages:
+                            if any(variant in class_text for variant in variants):
+                                # Make sure no selected language is also mentioned
+                                has_selected = False
+                                for selected_lang in self.selected_languages:
+                                    selected_variants = self.language_mappings.get(selected_lang, [selected_lang])
+                                    if any(selected_variant in class_text for selected_variant in selected_variants):
+                                        has_selected = True
+                                        break
+                                
+                                if not has_selected:
+                                    should_remove = True
+                                    break
+                
+                # Check data attributes
+                data_lang = element.get('data-language', '').lower()
+                if data_lang:
+                    is_selected_lang = False
+                    for selected_lang in self.selected_languages:
+                        lang_variants = self.language_mappings.get(selected_lang, [selected_lang])
+                        if any(variant in data_lang for variant in lang_variants):
+                            is_selected_lang = True
+                            break
+                    
+                    if not is_selected_lang:
+                        # Check if it's an unselected language
+                        for lang, variants in self.language_mappings.items():
+                            if lang not in self.selected_languages:
+                                if any(variant in data_lang for variant in variants):
+                                    should_remove = True
+                                    break
+                
+                if should_remove:
+                    element.decompose()
     
     def get_key_press(self):
         """Get a single key press from user (cross-platform)."""
